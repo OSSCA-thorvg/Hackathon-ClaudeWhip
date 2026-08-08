@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ADR-0007: Server-Optional Client — Manual Connection + Reactive Session Lifecycle</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <p class="backlink"><a href="index.html">← ADR list</a></p>
+  <h1>ADR-0007: Server-Optional Client — Manual Connection + Reactive Session Lifecycle</h1>
+  <p class="meta"><span class="status">Accepted</span> · 2026-08-02 · Author: ticket 011 session</p>
+
+  <h2>Context — why this decision is needed</h2>
+  <p>
+    This game is deployed on <strong>static hosting</strong> such as GitHub Pages. The bridge server
+    that detects sessions (ADR-0001), on the other hand, runs only on the player's <em>own machine</em>,
+    and only the person who started the server knows its address. In other words, the client must
+    satisfy the following two things at the same time.
+  </p>
+  <ul>
+    <li>It must open and be playable <strong>even without</strong> a server (there is just nothing to hit).</li>
+    <li>When a server <strong>does appear</strong>, characters must show up without reloading the page.</li>
+  </ul>
+  <p>
+    The previous boot sequence could do neither. That is because main.ts read
+    <code>bus.fetchCached('session_snapshot')</code> <strong>synchronously</strong> at boot time and built
+    the stage from that list. That structure only held up because the mock adapter published the snapshot
+    within the same tick — a real snapshot arriving from across the network shows up after boot, so it
+    always started with 0, and sessions that arrived afterwards were never on screen.
+  </p>
+
+  <h2>Decision — what was decided</h2>
+  <ol>
+    <li>
+      <strong>Do not auto-connect.</strong> The user has to enter the bridge address in the top bar of the
+      screen and press the connect button for it to attach. The default value is
+      <code>ws://localhost:{BRIDGE_PORT}</code>, but it is nothing more than a pre-filled default.
+    </li>
+    <li>
+      <strong>The stage boots with 0 targets.</strong> Session membership arrives entirely through bus events:
+      <code>session_snapshot</code> (full reconciliation) / <code>session_started</code> (add one) /
+      <code>session_ended</code> (remove one). Every time membership changes, the layout is recomputed and
+      <code>geometry</code> is re-sent to the worker.
+    </li>
+    <li>
+      <strong>When the connection drops, the targets disappear too.</strong> The adapter publishes an
+      <em>empty snapshot</em> at the moment of socket close / user disconnect.
+    </li>
+    <li>
+      Connection state is announced through the <strong>bus event</strong> <code>server_connection_changed</code>
+      (added to the EventMap). The server does not send this event — it is a client-only event that is not in
+      <code>ServerEventName</code>.
+    </li>
+    <li>
+      Entrance/exit presentation is done only with <strong>scene transform/opacity</strong>: pop-in (scale 0→1,
+      easeOutBack, 260ms) / fade-out (200ms, slight shrink). No separate rAF and no CSS animation is created —
+      the existing <code>renderFrame(dt)</code> advances it.
+    </li>
+  </ol>
+
+  <h2>Rationale — why it was done that way</h2>
+  <p>
+    <strong>Manual connection:</strong> If, on static hosting, it tried to attach to
+    <code>localhost:8787</code> automatically, a connection failure would be printed in the console of every
+    single visitor who did not start a server, and backoff retries would spin forever. There is no reason for
+    someone who came to see the demo to have an error log as their first impression. On top of that, the very
+    look of a page opened on someone else's machine scanning their local ports is undesirable.
+  </p>
+  <p>
+    <strong>Removing targets when disconnected:</strong> In this game, one character means "one Claude Code
+    session alive on this machine right now." If characters remain after the server has died, that one and only
+    meaning becomes a lie — you would effectively be hitting sessions that have already ended. It is more honest
+    to clear it out than to leave stale data. If reconnection succeeds, the server sends a snapshot immediately
+    upon connection, so the characters come back with a pop-in.
+    (Measured: killing the server process → state <code>disconnected</code> + label removal in about 200ms,
+    followed by backoff retries. On server restart, it recovers automatically without a click.)
+  </p>
+  <p>
+    <strong>Why state flows through the bus:</strong> If the connection UI subscribed to the adapter directly,
+    either the adapter would have to know about the UI or the UI would have to know the adapter's internals.
+    State is emitted as an event and the UI looks only at that — that way transitions that the <em>UI did not
+    initiate</em>, such as backoff retries, are displayed automatically (exactly the boundary rule of ADR-0002).
+  </p>
+
+  <h2>Alternatives — considered but rejected</h2>
+  <ul>
+    <li>
+      <strong>Auto-connect at boot (+ silently ignore failures)</strong> — console noise and pointless retries.
+      For the vast majority of static-hosting visitors there is no server at all.
+    </li>
+    <li>
+      <strong>Keep the last session list even when the connection drops</strong> — the screen keeps looking
+      plausible but diverges from reality. It breaks the game's premise of "sessions alive right now."
+    </li>
+    <li>
+      <strong>Keep the mock adapter as a demo mode</strong> — now that the real server works, fake sessions are
+      harmful because they are indistinguishable from real data during a demonstration. The right answer for a
+      demo without a server is "no targets."
+    </li>
+    <li>
+      <strong>Pass connection state through a callback</strong> — direct adapter↔UI coupling. Adding one more
+      event to the bus contract is more consistent with the rules.
+    </li>
+  </ul>
+
+  <h2>Consequences — the results of this decision</h2>
+  <ul>
+    <li>
+      The concept of "the session list at boot time" is gone from main.ts. The dependence on synchronous
+      <code>fetchCached</code> has disappeared, and a late-arriving snapshot is a normal path.
+    </li>
+    <li>
+      Stage membership changes are asynchronous (Lottie loading), so they are <strong>serialized through an
+      internal queue</strong>. Even if a snapshot and a started event overlap, the slot order does not get
+      inverted. Slot order is <strong>first-come order</strong>, not the server snapshot order — even if the
+      list is reordered, characters do not swap places.
+    </li>
+    <li>
+      Re-sending worker geometry only happens when membership <em>actually</em> changed.
+      It is safe because <code>withGeometry</code> preserves the reaction progress of live targets.
+    </li>
+    <li>
+      Target paints are not added to the canvas directly but to the <strong>target layer Scene</strong>.
+      That way, no matter how many targets come and go, the player (the whip) always stays on top — detaching
+      and reattaching the player paint to preserve ordering would be a dangerous thing that relies on refcounts.
+    </li>
+    <li>
+      Revisit condition: if we come to support a remote (non-localhost) bridge, we need to revisit address
+      persistence (localStorage) and wss/authentication. For now we deliberately do not persist it.
+    </li>
+  </ul>
+</body>
+</html>

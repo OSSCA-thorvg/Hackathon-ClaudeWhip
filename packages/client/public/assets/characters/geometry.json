@@ -1,0 +1,80 @@
+{
+  "player": {
+    "canvasSize": 400,
+    "bodyCenter": {
+      "x": 104,
+      "y": 255
+    },
+    "bodyBox": {
+      "halfW": 63,
+      "halfH": 31.5
+    },
+    "whipStrikeBox": {
+      "x0": 200,
+      "y0": 208,
+      "x1": 359,
+      "y1": 265
+    },
+    "markers": {
+      "idle": [
+        0,
+        60
+      ],
+      "walk": [
+        60,
+        40
+      ],
+      "windup": [
+        100,
+        30
+      ],
+      "swing": [
+        130,
+        46
+      ],
+      "crack": [
+        144,
+        6
+      ]
+    },
+    "walkLoopFrames": 20,
+    "swingActive": {
+      "begin": 14,
+      "end": 19
+    },
+    "tip": [
+      359,
+      256
+    ]
+  },
+  "target": {
+    "canvasSize": 240,
+    "bodyCenter": {
+      "x": 120,
+      "y": 120
+    },
+    "bodyBox": {
+      "halfW": 63,
+      "halfH": 31.5
+    },
+    "markers": {
+      "idle": [
+        0,
+        60
+      ],
+      "working": [
+        60,
+        60
+      ],
+      "hit": [
+        120,
+        30
+      ],
+      "flinch": [
+        150,
+        60
+      ]
+    }
+  },
+  "style": "flat 2D dot — solid-color silhouette, no rotation (axis-aligned), sharp corners"
+}

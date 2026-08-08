@@ -1,0 +1,10 @@
+{
+  "//": "E2E only — a test file holds both Node (runner) and browser (page.evaluate) code, so both libs are enabled. The production tsconfigs live per package (pnpm -r typecheck); this one sits outside them.",
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "//include": "The client/shared sources enter the program automatically through imports — they are not listed here",
+  "include": ["../playwright.config.ts", "."]
+}

@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ADR-0004: Active session detection — ps process scan + session file mtime + SDK</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <p class="backlink"><a href="index.html">← ADR list</a></p>
+  <h1>ADR-0004: Active session detection — ps process scan + session file mtime + SDK</h1>
+  <p class="meta"><span class="status">Accepted</span> · 2026-08-02 · Author: wayfinder charting session</p>
+
+  <h2>Context — why this decision is needed</h2>
+  <p>
+    The scope of "sessions currently in use" was decided as <strong>active Claude Code sessions running on this machine</strong>
+    (<code>.wayfinder/tickets/006</code>, user decision). The SDK's <code>listSessions()</code> returns
+    <em>every past session</em> in the directory, so a separate criterion is needed to pick out only the sessions that are "alive right now".
+  </p>
+
+  <h2>Decision — what was decided</h2>
+  <p>We combine three sources (all empirically verified on this machine, <code>.wayfinder/tickets/001</code>):</p>
+  <ol>
+    <li><strong>Liveness determination</strong>: extract the session ID from <code>ps</code> output — a running process is itself the evidence of an active session.
+      The regex lives in a single source of truth: the <code>SESSION_PS_PATTERN</code> constant in <code>session-monitor.ts</code>.
+      <em>(⚠️ This step 1 was replaced on 2026-08-03 by the <a href="#amendment-v2">Amendment (detection v2)</a> — see below.
+      <code>SESSION_PS_PATTERN</code> no longer exists.)</em>
+      <pre><code>ps aux | grep -oE 'claude --session-id [a-f0-9-]+' | awk '{print $NF}'  # example as of time of writing</code></pre></li>
+    <li><strong>Metadata enrichment</strong>: match the session ID against <code>~/.claude/projects/&lt;encoded-cwd&gt;/&lt;session-id&gt;.jsonl</code>
+      to restore the cwd (non-alphanumeric characters in the path are replaced with <code>-</code>), and obtain
+      summary/gitBranch via the SDK's <code>getSessionInfo()</code></li>
+    <li><strong>Status distinction</strong>: if the <code>.jsonl</code> mtime is within <code>WORKING_THRESHOLD_MS</code> (10 seconds at time of writing), it is
+      <code>working</code>, otherwise <code>idle</code> — usable for differentiating character animations</li>
+  </ol>
+  <p>Polling runs at a <code>POLL_INTERVAL_MS</code> (1 second at time of writing) interval. Diffing against the previous snapshot generates
+    <code>session_started</code>/<code>session_ended</code> events. The current values of the tuning constants have a single source of truth:
+    <code>packages/server/src/session-monitor.ts</code>.</p>
+
+  <h2>Rationale — why it was done this way</h2>
+  <ul>
+    <li>Process existence is the only reliable signal of "active" — file mtime alone cannot distinguish a terminated session from a quiet one</li>
+    <li>Empirical evidence: on this machine, the <code>ps</code> scan extracted the IDs of 2 active sessions directly from the command line</li>
+    <li>1-second polling amounts to a few dozen <code>ps</code> + <code>stat</code> calls — negligible load, and simpler than adding a file-watcher dependency (chokidar, etc.)</li>
+  </ul>
+
+  <h2>Alternatives — considered but rejected</h2>
+  <ul>
+    <li><strong>SDK <code>listSessions()</code> alone</strong> — returns all past sessions too, cannot determine liveness</li>
+    <li><strong>File watching (fs.watch)</strong> — mtime updates only tell you "working", not that the session is alive. As a diff source, polling is simpler</li>
+    <li><strong>Searching for lock files</strong> — no guarantee that Claude Code exposes a per-session lock (private implementation detail)</li>
+  </ul>
+
+  <h2>Consequences — results of this decision</h2>
+  <ul>
+    <li>The <code>ps</code> command-line format (the <code>--session-id</code> flag) depends on Claude Code's internal implementation — a version bump could break it, so the pattern is isolated as a constant in <code>session-monitor.ts</code></li>
+    <li>macOS/Linux only (depends on <code>ps</code>) — Windows support is out of scope</li>
+    <li>Detection itself works even without the SDK (steps 1 and 2) — the SDK is only for metadata enrichment, so graceful degradation is possible on failure</li>
+  </ul>
+
+  <h2 id="amendment-v2">Amendment (2026-08-03) — detection v2: including processes without a session ID</h2>
+  <p class="meta">Ticket <code>.wayfinder/tickets/016-session-detection-v2.md</code> · This does not overturn the decision; it only extends step 1 (liveness determination).</p>
+
+  <p><strong>What the problem was (measured on this machine).</strong> v1's <code>SESSION_PS_PATTERN</code>
+    matched only <code>claude --session-id &lt;uuid&gt;</code>. But the only sessions that carry a session ID on the command line
+    are <em>sessions launched as background tasks</em>. Most of the sessions the user was actually working in were not caught:</p>
+  <ul>
+    <li><strong>Interactive sessions</strong> — of the form <code>claude --settings {…}</code> (e.g. PID 11321, cwd <code>~/Documents/some-project</code>)</li>
+    <li><strong>VS Code extension sessions</strong> — <code>…/anthropic.claude-code-*/resources/native-binary/claude --output-format stream-json …</code> (e.g. PID 77090, same cwd)</li>
+  </ul>
+  <p>Neither process keeps the transcript (<code>.jsonl</code>) open at all times (it opens and closes only when writing),
+    so the session cannot be traced back via open files. On the other hand, <code>lsof -a -p &lt;pid&gt; -d cwd</code>
+    <strong>always yields the working directory</strong>.</p>
+
+  <p><strong>The v2 algorithm.</strong> One ps call → candidate selection → ID assignment:</p>
+  <ol>
+    <li><strong>Candidate selection is done by the executable (argv[0]) only</strong> — string-matching the whole command line
+      catches other people's processes that happen to have 'claude' in their arguments (cmux hooks, shell wrappers, our own pnpm/vite filters).
+      Only processes whose basename is exactly <code>claude</code> are candidates (case-sensitive —
+      <code>/Applications/Claude.app/…/Claude</code> and <code>Claude Helper</code> are eliminated here).</li>
+    <li><strong>Exclude infrastructure roles</strong>: if argv[1] is <code>bg-spare</code>, <code>bg-pty-host</code>,
+      <code>daemon</code>, <code>mcp</code>, <code>doctor</code>, <code>update</code>, <code>install</code>,
+      <code>migrate-installer</code>, <code>setup-token</code>, or <code>plugin</code>, it is not a session
+      (<code>INFRA_SUBCOMMANDS</code>). A bare argument not in this list is treated as a session —
+      because <code>claude "prompt"</code> is a legitimate one-shot session.</li>
+    <li><strong>Command-line ID</strong>: if the token after <code>--session-id</code> or <code>--resume</code> is a UUID, use it as the session ID
+      (<code>SESSION_ID_FLAGS</code>). Including <code>--resume</code> is an extension over v1 — interactive sessions launched with cmux
+      take this form, and the resumed session ID is that process's session ID.</li>
+    <li><strong>Keep sticky assignment</strong>: even without a command-line ID, if a session ID has <em>already been assigned to that pid</em>,
+      reuse it without re-resolving. The cwd mapping below is a <em>guess</em> ("the most recent file in that directory that is not yet taken"),
+      so re-running it on every poll makes a character's identity waver when file mtimes change.
+      The only exception is synthetic IDs (next item) — every <code>SLOW_RETRY_INTERVAL_MS</code> (10 seconds) the assignment is released and
+      promotion to a real session ID is retried. The same 10-second interval is shared by SDK metadata re-lookup, transcript re-resolution, and
+      lsof failure retries (all for the same reason: "let's try again around the time the SDK fills in the cwd hint").</li>
+    <li><strong>cwd mapping fallback</strong>: if nothing above matches, get the cwd via <code>lsof</code>,
+      run <code>encodeProjectDir(cwd)</code> → scan that project directory's <code>.jsonl</code> files newest-first,
+      and use the name of the first file <em>not already claimed by another live session</em> as the session ID.
+      If two processes share the same cwd (measured: interactive + VS Code in the same directory), they take different files in newest-first order.</li>
+    <li><strong>Synthetic ID</strong>: if there is still no matching transcript, emit the session anyway as <code>pid-&lt;pid&gt;</code>.
+      Since the requirement is "as many characters as there are active sessions", a just-launched session that has no transcript yet must still get a character.
+      A synthetic ID is not a real session ID, so it <strong>does not perform an SDK lookup</strong> (avoiding meaningless failure logs) and
+      is sent down with <code>lastActivityAt=0 / idle</code>. If a later poll promotes it to a real ID, it is swapped out via
+      <code>session_ended</code> + <code>session_started</code>.</li>
+  </ol>
+  <p>Step 2 (metadata enrichment), step 3 (mtime status distinction), and diff/snapshot are <strong>unchanged</strong>.
+    The cwd is now filled in the order SDK → lsof → transcript directory name (since the lsof value is measured from the process, the label survives even when the SDK fails).</p>
+
+  <p><strong>Cost and failure handling.</strong> <code>lsof</code> is called <em>once for a batch</em> of unresolved pids
+    (<code>-p pid1,pid2,…</code>), and the result is cached for the lifetime of the process — claude does not chdir while running.
+    So in steady state there are 0 lsof calls per poll. The call is wrapped in an <code>execFile</code> timeout, and
+    on failure only those pids are left unresolved for this poll (partial output is salvaged and used).
+    <strong>Failed pids are negatively cached</strong> and retried only every <code>SLOW_RETRY_INTERVAL_MS</code> —
+    since the lsof timeout (3 seconds) is longer than the poll interval (1 second), without throttling a single unresolvable pid
+    would keep piling up subprocesses. Session ID assignment is sticky to the pid so that character identity does not waver from poll to poll.</p>
+
+  <p><strong>Empirical evidence (2026-08-03, this machine).</strong> v1 reported only 2 sessions (= background tasks that had <code>--session-id</code>).
+    v2 matched exactly: 8 claude session processes counted by ps and 8 in the snapshot — 4 interactive,
+    1 VS Code extension, 1 bare <code>claude</code>, 2 with <code>--session-id</code>.
+    <code>bg-spare</code>/<code>bg-pty-host</code>/<code>daemon run</code>/Claude.app helpers were all excluded,
+    and our own pnpm/vite processes were not caught either.</p>
+
+  <p><strong>New fragility.</strong> v1's "dependence on the <code>--session-id</code> format" has grown into three branches —
+    ① install path / executable name, ② infrastructure subcommand names, ③ the transcript filename = session ID convention.
+    All three are Claude Code internals, so if detection breaks, first check
+    <code>CLAUDE_CLI_BASENAME</code> / <code>INFRA_SUBCOMMANDS</code> / <code>SESSION_ID_FLAGS</code> at the top of <code>session-monitor.ts</code>
+    (these replace v1's single <code>SESSION_PS_PATTERN</code> constant). Also, the cwd mapping is a <em>guess</em>, so
+    if several old sessions and a new process are mixed in one directory, a process may get attached to the wrong (but same-directory)
+    session ID — the character count is still right and the cwd in the label is also right; what can be wrong is the summary/branch.</p>
+</body>
+</html>

@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ClaudeWhip Development Phase 1 — Architecture &amp; Behavior Details</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <p class="backlink"><a href="index.html">← ADR list</a></p>
+  <h1>ClaudeWhip Development Phase 1 — Architecture &amp; Behavior Details</h1>
+  <p class="meta"><span class="status">Phase 1 Development Complete</span> · 2026-08-02 · The rationale for each decision lives in its ADR; this document is a snapshot of "how it actually works right now"</p>
+
+  <h2>1. What Works</h2>
+  <p>
+    A gameplay slice that is self-contained in the browser works: Claude (the Clawd mascot) characters stand in a
+    vertical line on the right side of the screen, and you move the whip-wielding player with <code>↑↓←→</code> and strike with <code>Space</code>.
+    A character that gets hit plays a reaction where it squints its eyes and shakes (no effect on the real session — visual only).
+  </p>
+  <p>
+    <strong>The boundary of phase 1</strong>: session data is still mock — <code>session/mock-adapter.ts</code>
+    publishes 3 fake sessions at boot. The bridge server (detecting real active Claude Code sessions) is phase 2 work;
+    its design is settled (<a href="0004-session-detection.html">ADR-0004</a>) and only the server stub and the protocol's placeholder are in place.
+  </p>
+
+  <h2>2. System Layout (pnpm monorepo)</h2>
+  <pre><code>pnpm-workspace.yaml
+packages/
+  shared/   @claudewhip/shared — event contract, types, constants. Server/client import it via workspace:*
+  server/   @claudewhip/server — bridge server (phase 2; currently a stub + session-monitor design)
+  client/   @claudewhip/client — Vite browser app (the main body of phase 1 development)</code></pre>
+  <p>
+    <code>shared</code> exposes its source (<code>src/index.ts</code>) directly without a build step — vite/tsx consume TS
+    as-is, so a contract change is immediately reflected on both sides. Communication between components goes only through this
+    contract (<code>EventMap</code>) (<a href="0002-typed-event-bus.html">ADR-0002</a>).
+  </p>
+
+  <h2>3. The Big Picture</h2>
+  <pre><code>┌─ packages/server (Node, phase 2) ──────┐      ┌─ packages/client (browser) ────────────────────────────┐
+│ session-monitor (design complete)      │  WS  │ session/mock-adapter  ← a mock for now. To be swapped  │
+│  ps scan + jsonl mtime + SDK enrichment│─────▶│                          for ws-adapter in one line    │
+│  BRIDGE_PORT(8787), WireMessage        │      │        │ session_snapshot (cache)                      │
+└────────────────────────────────────────┘      │        ▼                                               │
+                                                │  [EventBus]──── player_move / whip_swing ──────┐       │
+                                                │    ▲   ▲                                       ▼       │
+                                                │    │   └── game_state_updated / target_hit ─ logic     │
+                                                │  input/keyboard        (MessagePort)        worker     │
+                                                │                                             (60Hz)     │
+                                                │  render/ ── single thorvg 'gl' canvas ◀─ subscribe     │
+                                                │  (main thread, Scene per entity, single rAF)           │
+                                                └────────────────────────────────────────────────────────┘</code></pre>
+
+  <h2>4. Event Bus — a Typed Contract over Pluggable Transports</h2>
+  <p>Implementation: <code>client/src/core/bus/</code>. Contract: <code>shared/src/events.ts</code>.</p>
+  <table>
+    <tr><th>Event</th><th>Publisher</th><th>Subscriber</th><th>Purpose</th></tr>
+    <tr><td><code>session_snapshot</code></td><td>mock adapter (cache: true)</td><td><code>fetchCached</code> at main's boot</td><td>session list → character creation</td></tr>
+    <tr><td><code>session_started/ended</code></td><td>(phase 2: ws-adapter)</td><td>(phase 2)</td><td>session entry/exit</td></tr>
+    <tr><td><code>player_move</code></td><td>input/keyboard</td><td>logic worker</td><td>arrow-key hold state</td></tr>
+    <tr><td><code>whip_swing</code></td><td>input/keyboard</td><td>logic worker</td><td>whip input</td></tr>
+    <tr><td><code>game_state_updated</code></td><td>logic worker (60Hz)</td><td>render-loop (latest-wins)</td><td>player x/y/facing/swinging</td></tr>
+    <tr><td><code>target_hit</code></td><td>logic worker</td><td>render (the target in question)</td><td>hit-reaction trigger</td></tr>
+  </table>
+  <p>Core mechanisms:</p>
+  <ul>
+    <li><strong>Transport abstraction</strong>: <code>LocalTransport</code> (same thread) + <code>PortTransport</code> (worker MessagePort).
+      Components never touch postMessage directly</li>
+    <li><strong>Handler isolation</strong>: every subscription callback is wrapped in try/catch so the dispatch loop never dies</li>
+    <li><strong>High-frequency handling</strong>: for <code>game_state_updated</code>, the render loop overwrites only the latest value in the handler
+      and applies it once in rAF (latest-wins), setting <code>latest = null</code> after applying to prevent double application</li>
+    <li><strong>late-joiner cache</strong>: events published with <code>cache: true</code> are retained keyed by event name —
+      a component created later gets the last state immediately via <code>fetchCached(name)</code></li>
+  </ul>
+
+  <h2>5. Boot Sequence (client/src/main.ts)</h2>
+  <ol>
+    <li>Inject layout CSS variables (<code>--column-width</code>, <code>--floor-inset</code> — the single source is <code>render/layout.ts</code>)</li>
+    <li>Create the <code>Bus</code></li>
+    <li>Start the mock session adapter → obtain 3 sessions via <code>fetchCached('session_snapshot')</code></li>
+    <li><code>Stage.create()</code> — initialize thorvg 'gl' (local WASM), a single canvas, add a <code>TargetNode</code> per session plus the <code>PlayerNode</code> as Scenes, and pre-place them at their spawn positions</li>
+    <li>Start the logic worker — connect the bus over a <code>MessageChannel</code> (PortTransport), pass the initial geometry through the control channel</li>
+    <li>Bind the keyboard → start the single rAF render loop</li>
+  </ol>
+
+  <h2>6. Rendering — Single Canvas + Scene per entity ('gl')</h2>
+  <p>Implementation: <code>client/src/render/</code>. Rationale: <a href="0006-single-canvas-scene.html">ADR-0006</a> (supersedes 0005).</p>
+  <ul>
+    <li><strong>There is exactly one canvas on the page</strong> (<code>#stage-canvas</code>, the full viewport). The WebGL2 context was confirmed empirically.
+      Only the background decoration (<code>#backdrop</code>) and the text (session labels, HUD — <code>#overlay</code>) are DOM</li>
+    <li><strong>Character = Scene node</strong>: <code>LottieNode</code> owns a Scene + LottieAnimation pair.
+      Position and horizontal flip are applied by <code>place(cx, cy, flipX)</code> via a matrix — thorvg's <code>scale()</code> is isotropic only,
+      so flipping goes through a Matrix, and the pivot is the manifest's <code>bodyCenter</code> (see the CLAUDE.md pitfalls)</li>
+    <li><strong>State transition = Lottie marker segment</strong>: idle loop ↔ <code>playOnceThenIdle('hit'|'swing')</code>.
+      Frame seeking happens in our own rAF (<code>Animation.play()</code> is forbidden; guard against re-setting the same frame)</li>
+    <li><strong>One raster per frame</strong>: <code>Stage.renderFrame(dt)</code> advances each node's frame and then calls
+      <code>canvas.update().render()</code> exactly once</li>
+    <li><strong>Layout is computed in code</strong> (<code>layout.ts</code>): session slots are stacked in a 240px column on the right, and the resulting coordinates are
+      converted into the worker contract by <code>toStageGeometry()</code>. On resize: <code>canvas.resize</code> + recompute + resend</li>
+  </ul>
+
+  <h2>7. Game Logic — 60Hz Simulation in a Web Worker</h2>
+  <p>Implementation: <code>client/src/game/</code>. Rationale: <a href="0003-worker-strategy.html">ADR-0003</a> (thorvg does not support worker rendering → only the logic is split out).</p>
+  <ul>
+    <li><strong>Pure-function simulation</strong> (<code>simulation.ts</code>): (state, input) → next state. No contact with DOM/worker APIs — testable without a worker</li>
+    <li><strong>Fixed tick</strong>: a 60Hz accumulator loop (<code>logic.worker.ts</code>). The worker cannot see the DOM, so geometry is
+      injected by main through the control channel (the init/geometry messages in <code>protocol.ts</code>) — separate from bus traffic</li>
+    <li><strong>Movement</strong>: 4-directional at 300px/s, with the body center clamped 40px inside the stage margin. Only left/right input changes facing</li>
+    <li><strong>Swing state machine</strong>: re-input is ignored until the 30-tick playback (0.5s, mirroring the length of the asset's 'swing' marker) completes.
+      Detection runs exactly once, on entering ticks 8–20 (the interval where the whip is extended)</li>
+    <li><strong>Hit detection</strong> (<code>hitbox.ts</code>, refined in phase 2): AABB overlap of the crack frame's whip box (measured from the asset FK,
+      manifest <code>whipStrikeBox</code>) × the target's body box — every overlapping target is hit, excluding targets already in a reaction.
+      The 30-tick hit reaction doubles as the re-hit cooldown</li>
+  </ul>
+
+  <h2>8. Asset Contract — a Replaceable Clawd Character</h2>
+  <p>Implementation: <code>client/public/assets/characters/*.json</code> + <code>client/src/assets/manifest.ts</code>.</p>
+  <ul>
+    <li>A boxy Clawd mascot (based on the user's sketch): a 2:1 horizontal body (#D97757) + dot eyes + side arms + legs.
+      The player adds an 8-bone chain whip (dark handle + orange lash)</li>
+    <li><strong>Marker convention</strong>: target <code>idle</code> (0–60 loop) / <code>hit</code> (60–90), player <code>idle</code> / <code>swing</code>.
+      Loop seams and return poses are verified at the pixel level</li>
+    <li><strong>The manifest is the single source</strong>: file paths, marker names, <code>canvasSize</code> (target 240 / player 360 —
+      the whip's headroom), <code>bodyCenter</code> (target 120,120 / player 104,255 — the reference for alignment, flip pivot, hitbox, and spawn).
+      Replacing an asset = changing only the JSON file + the manifest values</li>
+    <li>⚠️ If you change a marker's length, change the tick constants in <code>simulation.ts</code> (SWING_TICKS, etc.) along with it — see the manifest comments</li>
+  </ul>
+
+  <h2>9. The Path a Single Strike Travels (end-to-end)</h2>
+  <pre><code>[keydown Space]
+  input/keyboard ──▶ bus.broadcast('whip_swing')
+                       ├─ LocalTransport → (main subscriber: render-loop consumes the state for swinging edge detection)
+                       └─ PortTransport → logic worker
+  Worker's next tick: applySwing → swingTick=0 begins
+  Tick 11 (entering the crack): pickHitTargets(whip box, targets) → 'mock-bravo' hit!
+    ├─ bus.broadcast('target_hit', {sessionId}) ──▶ main: TargetNode('mock-bravo').playHit()
+    │                                               → hit marker segment once + scene shake + label is-hit
+    └─ target hitTick=30 begins (excluded from re-hits during the reaction)
+  Every tick: bus.broadcast('game_state_updated', {player, targets})
+    ──▶ render-loop: refresh latest → in rAF, PlayerNode.place(x,y,flip) + swing segment
+  Every rAF: Stage.renderFrame → advance every node's frame → canvas.update().render() once</code></pre>
+
+  <h2>10. Verification Status</h2>
+  <ul>
+    <li><code>pnpm typecheck</code> (all workspaces) · <code>pnpm -r build</code> pass; the local WASM bundle is confirmed (safe for an offline demo)</li>
+    <li>Real-browser (Chrome) verification: 0 console errors, a hit matrix across top/middle/bottom heights (event-based), geometry recomputation on resize,
+      0px drift at the pixel level on horizontal flip, renderer 'gl' confirmed empirically</li>
+    <li>15+ thorvg 1.1.0 pitfalls measured along the way — <strong>the CLAUDE.md "pitfalls" section is the single source</strong></li>
+  </ul>
+
+  <h2>11. What Remains (phase 2)</h2>
+  <ul>
+    <li><strong>Implement the bridge server</strong>: session-monitor (ps scan + jsonl mtime + SDK, 1-second polling) → WebSocket push.
+      On the client, replace the one line for the mock adapter in <code>main.ts</code> with ws-adapter (the published events are identical)</li>
+    <li>When swapping in ws-adapter, make boot reactive: it currently relies on the mock's synchronous cache — switch to rebuilding from a
+      <code>session_snapshot</code> subscription + consuming <code>session_started/ended</code> (reviewed and settled; to be done together with the server integration)</li>
+    <li>Polish (optional): staggering the phase of the targets' idle (currently everyone blinks in sync), sound, differentiated animation per working/idle state</li>
+  </ul>
+
+  <h2>Related Documents</h2>
+  <ul>
+    <li>Decision records: <a href="index.html">ADR list</a> (0001 two-tier / 0002 event bus / 0003 worker / 0004 session detection / 0006 single canvas)</li>
+    <li>Planning &amp; decision history: <code>.wayfinder/map.md</code> · Implementation guides: each <code>src/*</code> README · Pitfalls: CLAUDE.md</li>
+  </ul>
+</body>
+</html>

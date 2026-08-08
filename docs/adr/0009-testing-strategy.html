@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ADR-0009: Testing Strategy — Pure-Module Units + Fake-Bridge E2E</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <p class="backlink"><a href="index.html">← ADR list</a></p>
+  <h1>ADR-0009: Testing Strategy — Pure-Module Units + Fake-Bridge E2E</h1>
+  <p class="meta"><span class="status">Accepted</span> · 2026-08-04 · Author: seungwon (ticket 017)</p>
+
+  <h2>Context — why this decision is needed</h2>
+  <p>
+    Up to the point where the second development round was completed, there were 0 tests. And yet the things to be
+    verified in this project split into extremes in character: on one side there is pure logic that can be run as-is
+    in Node (simulation, hit detection, layout, camera, label folding, event bus, ps parsing), and on the other side
+    there is a layer that cannot be executed at all without a browser
+    (the thorvg WASM+GL renderer, the WebSocket adapter, the worker boundary). On top of that, the actual data
+    source — the bridge server — depends on <strong>the live Claude Code sessions on this machine</strong>: if a test
+    attaches to the real server, the session count varies from moment to moment, making it non-deterministic.
+  </p>
+
+  <h2>Decision — what was decided</h2>
+  <ul>
+    <li><strong>A split between units (Vitest) and E2E (Playwright).</strong> Units cover only pure modules — they are
+      all <code>environment: 'node'</code>, and if a DOM environment appears to be needed, the target selection was
+      wrong. The browser-coupled layers (renderer, adapter, worker wiring) are all covered by E2E.</li>
+    <li><strong>The session source for E2E is a fake bridge WS server</strong> (<code>e2e/fixtures/fake-bridge.ts</code>).
+      The test starts it itself and injects <code>session_snapshot</code> at arbitrary points in time — it does not
+      depend on the real server or real sessions, so it is deterministic, and since the framing shares shared's
+      <code>wireFrame()</code> with the real server, it is structurally guaranteed that a fake frame is byte-for-byte
+      identical to a real frame.</li>
+    <li><strong>The observation window for E2E is the dev build's <code>window.__claudewhip</code> debug handle</strong>
+      — it does not look at canvas pixels. The handle's shape has been promoted to the client-owned type
+      <code>ClaudeWhipDebug</code> (<code>client/src/debug-handle.ts</code>), and e2e imports the same type, so if the
+      handle's composition changes, <code>pnpm typecheck</code> catches it. That is why E2E must target the vite
+      <em>dev</em> server (the production bundle does not have the handle).</li>
+    <li><strong>What tests verify is the contract — no copies.</strong> Expected values are not copied numbers; they are
+      derived from the source (<code>assets/manifest.ts</code>, each module's exported constants). To make this
+      possible, the simulation tuning constants, <code>WHIP_STRIKE_OFFSET</code>, the hit-band back-calculation
+      (<code>hitBand</code>) and so on were promoted to exports — if the assets are re-measured, the tests follow
+      automatically.</li>
+    <li><strong>For the server, only the pure part is unit tested</strong> — <code>parseClaudeProcesses</code> and the
+      detection rules, with fixtures of actually measured ps output. The <code>SessionMonitor</code> polling loop does
+      not get an exec/fs injection refactor.</li>
+    <li><strong>CI is out of scope this time</strong> — only up to local <code>pnpm test</code> / <code>pnpm test:e2e</code>.
+      The CI workflow will be decided together with the GH Pages deployment pipeline (an undecided ticket).</li>
+  </ul>
+
+  <h2>Rationale — why it was done that way</h2>
+  <ul>
+    <li>The boundary between pure and coupled has already been drawn by the architecture (ADR-0002 event bus, ADR-0003
+      worker separation, "keep the simulation as pure functions"). If the test structure follows that boundary as-is,
+      mocks and stubs are barely needed.</li>
+    <li>Thanks to the server-optional design (ADR-0007), client membership is entirely event-driven — as long as the
+      fake bridge pushes things in the same order as the real server (snapshot immediately on connection,
+      started→ended→snapshot), the client cannot tell the difference. A real-server smoke test would add almost no
+      extra confidence.</li>
+    <li>The debug handle was made in the first place "so that the console and E2E can verify state without looking at the
+      canvas with their eyes" (ticket 011) — introducing E2E is the realization of that purpose, and the type promotion
+      turns drift in the observation contract into a compile error (demonstrated by a field-rename experiment).</li>
+    <li>Verification figures: 166 unit tests (8 files, ~170ms), 9 E2E tests (4 specs, ~7 seconds). E2E stability was
+      confirmed with 5 consecutive runs + repeat-each=3 + workers=1. While writing them, it was established that the hit
+      band numbers from ticket 012 were based on the v1 assets — the current (v2) values are the band
+      [cy−41.5, cy+78.5] and an active window of 14~19 ticks, and this discovery is itself the justification for the
+      "no copied numbers" principle.</li>
+  </ul>
+
+  <h2>Alternatives — considered but rejected</h2>
+  <ul>
+    <li><strong>Real-server smoke E2E</strong> — non-deterministic because it depends on the number of real sessions on this machine, and impossible in CI. Excluded by user decision.</li>
+    <li><strong>node:test</strong> — it has no dependencies, but the TS loader, watch mode and reporting are cumbersome, and Vitest is the coherent fit for a vite 8 project.</li>
+    <li><strong>Renderer unit tests in a jsdom-style DOM environment</strong> — thorvg is WASM+GL, so it cannot run there anyway.
+      Most of the CLAUDE.md pitfalls are of the "verify in a browser" kind, so renderer verification is E2E's job.</li>
+    <li><strong>Reviving a client-embedded mock adapter</strong> — we do not resurrect, in the name of testing, what was
+      deleted in ticket 011. Fakes live outside production code (in e2e fixtures).</li>
+    <li><strong>A <code>SessionMonitor</code> injection refactor</strong> — excluded because the deformation of production code is large relative to the coverage gained.</li>
+  </ul>
+
+  <h2>Consequences — the results of this decision</h2>
+  <ul>
+    <li>What we gain: a deterministic test suite (green anywhere locally), regression defense for the hit geometry and
+      detection rules, type safety for the observation contract. 0 changes to production behavior (only export promotions
+      and pure additions).</li>
+    <li>What we accept: the real-server path (ps/lsof/SDK polling) has no automated test — regressions that break session
+      detection depend on manual verification (<code>pnpm dev</code>). Since E2E presumes the dev server, the production
+      bundle itself has no smoke test.</li>
+    <li>Revisit condition: when building the GH Pages deployment pipeline, decide on CI execution (and whether to smoke-test
+      the production build). If logic grows at the worker boundary or in the adapter, redraw the boundary of what to pull
+      down into units.</li>
+  </ul>
+</body>
+</html>

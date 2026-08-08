@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ADR-0005: Rendering strategy — one canvas per session + 'sw' renderer + Lottie markers</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <p class="backlink"><a href="index.html">← ADR list</a></p>
+  <h1>ADR-0005: Rendering strategy — one canvas per session + 'sw' renderer + Lottie markers</h1>
+  <p class="meta"><span class="status">Superseded</span> · 2026-08-02 · Author: wayfinder charting session ·
+    Superseded by <a href="0006-single-canvas-scene.html">ADR-0006 (single canvas + Scene per entity)</a> —
+    the prototype review confirmed that the user's original intent was a single canvas. The Lottie marker and WASM loading items remain valid in 0006 as well.</p>
+
+  <h2>Context — why this decision is needed</h2>
+  <p>
+    REQUIREMENT: draw them in a line on the right "using as many webcanvases as there are" sessions. Constraints confirmed in the thorvg research
+    (<code>.wayfinder/tickets/002</code>): the WASM module is a per-page singleton, and the renderer
+    backend (<code>sw</code>/<code>gl</code>/<code>wg</code>) is decided <strong>globally, once</strong> at <code>init()</code>, and
+    <code>'gl'</code> consumes a WebGL context per canvas, hitting the browser cap (~8–16).
+  </p>
+
+  <h2>Decision — what was decided</h2>
+  <ul>
+    <li><strong>Canvas composition</strong>: one small canvas per session (right-hand column) + one player stage canvas. <code>ThorVG.init()</code> is called once, and all canvases share the WASM module</li>
+    <li><strong>Renderer</strong>: adopt <code>'sw'</code> (software) globally — safe even when the number of sessions exceeds the WebGL context cap</li>
+    <li><strong>WASM loading</strong>: <code>import wasmUrl from '@thorvg/webcanvas/dist/thorvg.wasm?url'</code> + <code>locateFile</code> — the package default (loading from the unpkg CDN) is forbidden</li>
+    <li><strong>Driving animation</strong>: instead of <code>Animation.play()</code>, do <code>anim.frame(f); canvas.update().render()</code> in a single rAF game loop</li>
+    <li><strong>State transitions</strong>: switch between markers inside a single Lottie file (<code>idle</code>/<code>hit</code>/<code>swing</code>) via <code>LottieAnimation.segment(marker)</code>. The mapping exists only in <code>assets/manifest.ts</code> (assets must be replaceable — <code>.wayfinder/tickets/005</code>)</li>
+    <li><strong>Memory</strong>: when a character exits because its session ended, explicitly call <code>animation.dispose()</code> + <code>canvas.destroy()</code></li>
+  </ul>
+
+  <h2>Rationale — why it was done this way</h2>
+  <ul>
+    <li>A canvas per session is REQUIREMENT's explicit demand, and it is natural for handling session entry/exit at the DOM level. The official benchmark drives 28 simultaneous instances, so scale is not a concern</li>
+    <li>Choosing <code>'sw'</code>: since there is only one global renderer, it must be decided based on the most constrained use case (many small canvases). On small canvases the performance difference is also negligible</li>
+    <li>Single rAF loop: frame synchronization and pause control are simpler than N per-canvas <code>play()</code> loops, and it combines naturally with <code>game_state_updated</code> coalescing</li>
+    <li>Forbidding the CDN default: removes the only external dependency that would instantly kill an offline / unstable-network demo environment</li>
+  </ul>
+
+  <h2>Alternatives — considered but rejected</h2>
+  <ul>
+    <li><strong>One large canvas + Scene per entity</strong> — could be better for performance, but conflicts with the "as many webcanvases as there are" requirement and prevents leaving layout to CSS. To be revisited if performance problems are measured</li>
+    <li><strong>The <code>'gl'</code> renderer</strong> — context cap risk. The demo could break with 8 or more sessions</li>
+    <li><strong>The @thorvg/lottie-player web component</strong> — convenient autoplay, but it lacks direct frame control, marker segments, and HUD compositing, so it is unsuitable for a game</li>
+    <li><strong>Separate Lottie files per state + picture swapping</strong> — kept as a fallback in case we end up using assets without markers (the manifest structure accommodates both)</li>
+  </ul>
+
+  <h2>Consequences — results of this decision</h2>
+  <ul>
+    <li><code>optimizeDeps.exclude: ['@thorvg/webcanvas']</code> is mandatory in the Vite config (the Emscripten glue's <code>import.meta.url</code> issue)</li>
+    <li>Character assets must include idle/hit (target) and idle/swing (player) markers — otherwise switch the manifest to the separate-files approach</li>
+    <li>Known bug workaround: calling <code>frame(0)</code> before <code>play()</code> raises an error (thorvg.web#216)</li>
+    <li>If the session count grows to a scale of several dozen, revisit 'gl' + a single canvas</li>
+  </ul>
+</body>
+</html>

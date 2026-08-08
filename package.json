@@ -1,0 +1,31 @@
+{
+  "name": "claudewhip",
+  "private": true,
+  "description": "A browser game: render one Claude character per active Claude Code session and whip them",
+  "packageManager": "pnpm@11.1.2",
+  "//engines": "scripts/check-geometry.mjs imports the manifest (.ts) directly — this requires Node's type stripping",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,green pnpm:dev:server pnpm:dev:client",
+    "dev:server": "pnpm --filter @claudewhip/server dev",
+    "dev:client": "pnpm --filter @claudewhip/client dev",
+    "build": "pnpm -r build",
+    "check:geometry": "node scripts/check-geometry.mjs",
+    "typecheck": "pnpm check:geometry && pnpm -r typecheck && tsc -p e2e/tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "//test:e2e": "pnpm blocks postinstall, so the browser needs a one-time `pnpm exec playwright install chromium`",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^24.13.3",
+    "@types/ws": "^8.18.1",
+    "concurrently": "^9.1.2",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10",
+    "ws": "^8.21.1"
+  }
+}

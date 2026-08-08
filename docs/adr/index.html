@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ClaudeWhip — Architectural Decision Records</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <h1>ClaudeWhip — ADR Collection</h1>
+  <p class="meta">
+    Every architectural decision and its rationale is collected here (REQUIREMENT must-have).
+    Write a new ADR by copying <a href="template.html">template.html</a>, then add it to this list.
+  </p>
+  <h2>Overview Documents</h2>
+  <ul class="adr-list">
+    <li>
+      <a href="dev-phase-1.html"><span class="id">Overview</span>Development Phase 1 — Architecture &amp; Behavior Details</a>
+      <p class="gist">A snapshot of the system as it currently works: monorepo layout, event bus, boot sequence, single-canvas rendering, worker simulation, asset contract, the end-to-end flow of a strike, verification status, phase 2 work.</p>
+    </li>
+  </ul>
+
+  <h2>Decision Records</h2>
+  <ul class="adr-list">
+    <li>
+      <a href="0001-node-bridge-server.html"><span class="id">ADR-0001</span>Two-Tier Architecture: Node Bridge Server + Browser Client</a>
+      <p class="gist">The Agent SDK is Node-only (subprocess model), so it cannot run directly in the browser → a local bridge server detects sessions and pushes them over WebSocket.</p>
+    </li>
+    <li>
+      <a href="0002-typed-event-bus.html"><span class="id">ADR-0002</span>Typed Event Bus with a Shared Contract</a>
+      <p class="gist">Components do not import each other; they share only the shared event contract. Transport abstraction + handler isolation + coalescing + late-joiner cache.</p>
+    </li>
+    <li>
+      <a href="0003-worker-strategy.html"><span class="id">ADR-0003</span>Worker Strategy: Rendering on the Main Thread, Game Logic in a Worker</a>
+      <p class="gist">thorvg webcanvas does not support OffscreenCanvas/worker rendering (confirmed via official issues) → only the simulation is split into a worker, keeping the main thread dedicated to drawing.</p>
+    </li>
+    <li>
+      <a href="0004-session-detection.html"><span class="id">ADR-0004</span>Active Session Detection: ps Process Scan + Session File mtime + SDK</a>
+      <p class="gist">A running <code>claude --session-id</code> process is the evidence of activity. jsonl mtime distinguishes working/idle, the SDK enriches metadata. 1-second polling.</p>
+    </li>
+    <li>
+      <a href="0005-rendering-strategy.html"><span class="id">ADR-0005</span>Rendering Strategy: Canvas per Session + 'sw' Renderer + Lottie Markers <em>(Superseded by 0006)</em></a>
+      <p class="gist">One shared WASM module, one Canvas per session. Global 'sw' renderer to avoid the WebGL context cap. State transitions are Lottie marker segments.</p>
+    </li>
+    <li>
+      <a href="0006-single-canvas-scene.html"><span class="id">ADR-0006</span>Single Canvas + Scene per entity + 'gl' Renderer</a>
+      <p class="gist">Reflects the user's original intent: a single canvas covering the whole game area, with characters placed as Scene nodes. One canvas = the context cap disappears → switch to 'gl'. Labels/HUD are DOM overlays.</p>
+    </li>
+    <li>
+      <a href="0007-server-optional-client.html"><span class="id">ADR-0007</span>Server-Optional Client: Manual Connection + Reactive Session Lifecycle</a>
+      <p class="gist">Static hosting (GitHub Pages) is the premise — there is no auto-connect; the user connects to the bridge address from the top bar. The stage boots with 0 targets and membership is entirely event-driven (pop-in/fade-out). When the connection drops, the targets disappear too.</p>
+    </li>
+    <li>
+      <a href="0008-world-space-camera.html"><span class="id">ADR-0008</span>World Space + Deadzone Camera + Viewport Culling</a>
+      <p class="gist">The coordinate system is promoted from viewport to world (dropping the floor concept) so that all sessions exist even when there are more of them than fit on screen. The camera is a render-only vertical offset that follows only outside a 25% top/bottom deadzone — the simulation and hit detection know nothing about the camera. Off-screen targets are detached from the scene, making per-frame cost proportional to the "visible count" only.</p>
+    </li>
+    <li>
+      <a href="0009-testing-strategy.html"><span class="id">ADR-0009</span>Testing Strategy: Pure-Module Units + Fake-Bridge E2E</a>
+      <p class="gist">Units (Vitest) cover pure modules only, in the node environment; the browser integration layer is covered by E2E (Playwright). Instead of a real server, E2E has a fake bridge WS inject snapshots (framing shares the shared <code>wireFrame</code>) and verifies state through the <code>window.__claudewhip</code> handle — the handle's type is owned by the client, so drift is caught at typecheck. What the tests verify is the contract: expected values are derived from manifest/exported constants, and copying numbers is forbidden.</p>
+    </li>
+  </ul>
+</body>
+</html>

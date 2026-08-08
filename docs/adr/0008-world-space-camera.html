@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ADR-0008: World Space + Deadzone Camera + Viewport Culling</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <p class="backlink"><a href="index.html">← ADR list</a></p>
+  <h1>ADR-0008: World Space + Deadzone Camera + Viewport Culling</h1>
+  <p class="meta"><span class="status">Accepted</span> · 2026-08-02 · Author: ticket 013 session</p>
+
+  <h2>Context — why this decision is needed</h2>
+  <p>
+    Session slots stack from the top in the right-hand column at 288px intervals (sprite 240 + label band 48).
+    If the viewport height is 800px, 2.8 is the limit — and yet this game's premise is "every session
+    <em>alive right now</em> on this machine," and in practice it is not rare for one person to have 10 or more
+    running.
+  </p>
+  <p>
+    In the previous structure the coordinate system was <strong>stage-local = canvas pixels = viewport</strong>,
+    all three being one and the same, and <code>StageGeometry.stageHeight</code> was simply the viewport height.
+    Overflowing slots went outside the canvas and <em>just vanished</em>. The player's vertical movement was also
+    clamped inside the viewport, so from the 4th session onward they were neither on screen nor hittable. The
+    requirement that "characters line up in proportion to the number of sessions" had quietly been broken.
+  </p>
+  <p>
+    At the same time there is a constraint in the opposite direction. One character is one Lottie animation, and
+    every frame costs a <code>frame()</code> seek plus rasterization. If there are 30 sessions and only 3 of them
+    are on screen, running all 30 is pure waste.
+  </p>
+
+  <h2>Decision — what was decided</h2>
+  <ol>
+    <li>
+      <strong>Promote the coordinate system to "world."</strong> World height =
+      <code>max(viewport height, session count × slot pitch + margin)</code>. Slots keep stacking downward beyond
+      the viewport, and the player's vertical clamp is also world-based. <strong>The concept of a floor (a fixed
+      ground) has been removed</strong> — as long as the world has a variable height, a "ground" does not hold
+      (the decorative floor line was removed too). The worker contract's <code>stageHeight</code> has changed in
+      both name and meaning to <code>worldHeight</code>.
+    </li>
+    <li>
+      <strong>The camera is a single render-only offset</strong> (<code>render/camera.ts</code>).
+      <code>screen.y = world.y - camera.y</code>. The simulation (<code>game/</code>) does not know the camera
+      exists — hit detection happens 100% in world coordinates, so the result is the same no matter where the
+      screen is looking.
+    </li>
+    <li>
+      <strong>Following uses a deadzone approach.</strong> While the player's <em>screen</em> y is inside the
+      25%~75% band of the viewport vertically, the camera is <strong>completely still</strong>. Once it leaves the
+      band, the camera follows with exponential decay (<code>1 - exp(-dt/τ)</code>, τ=90ms) so as to stick back to
+      that boundary, and it is clamped to <code>[0, worldHeight - viewportHeight]</code>.
+    </li>
+    <li>
+      <strong>Targets outside the viewport are detached from the scene</strong> (culling). Rather than just
+      skipping drawing, <code>targetLayer.remove(scene)</code> makes thorvg not even traverse them, and the
+      animation clock (<code>tick</code>) is stopped as well. When they come back in, they are restored with
+      <code>add</code>. The margin is one slot (288px), so they are already attached before appearing on screen.
+    </li>
+    <li>
+      <strong>DOM labels are translated as one whole dedicated layer.</strong> Instead of writing coordinates into
+      each of the N labels, a single <code>translate3d(0, -cameraY, 0)</code> is applied to the
+      <code>.session-labels</code> container.
+    </li>
+  </ol>
+
+  <h2>Rationale — why it was done that way</h2>
+  <p>
+    <strong>Why the camera was not put into the simulation:</strong> the worker cannot see the DOM (ADR-0003), and
+    the viewport size is a render-side fact. If the camera went into the simulation, hit detection would come to
+    depend on "where the screen is looking right now," and the precise hitboxes painstakingly tuned in ticket 012
+    would wobble depending on scroll state. Keeping it render-only makes the camera a purely visual effect, and in
+    fact, thanks to this decision, hitting the bottom-most character of 12 sessions (world y=2760, a position that
+    only becomes visible once the camera has gone down to 2160) worked as-is with no special handling.
+  </p>
+  <p>
+    <strong>Why a deadzone (user decision):</strong> if the camera always pins the player to the center of the
+    screen, the whole background shakes along with even left/right movement or tiny up/down movement, which makes
+    you motion-sick. The 25% band matches the intuition that "the screen stays still until you touch the edge."
+  </p>
+  <p>
+    <strong>Why exponential decay was chosen:</strong> fixed-speed tracking stops abruptly at the moment of
+    arrival, and a fixed per-frame ratio (<code>lerp(0.15)</code>) approach changes speed with the frame rate.
+    <code>1 - exp(-dt/τ)</code> converges by the same amount in the same time whether at 60Hz or 144Hz.
+    Measured: at a movement speed of 300px/s, the player pushes ~20px past the band before the camera catches up.
+  </p>
+  <p>
+    <strong>Why culling by detaching from the scene was chosen:</strong> the alternative is leaving them at alpha 0,
+    but then thorvg still traverses the nodes and prepares transform/compositing. Whether remove/add is possible
+    was decided by checking the bindings — <code>Scene.add</code> explicitly calls
+    <code>_tvg_paint_ref()</code> internally and <code>remove</code> undoes that reference, so the refcount stays
+    balanced (the JS wrapper holds one more reference of its own, so remove does not destroy the native object).
+    Measured with 12 sessions · an 800px viewport: 4~7 targets attached to the scene depending on camera position,
+    with the remaining 5~8 detached — that is, even as sessions grow, the frame cost is proportional only to
+    <strong>the number visible on screen</strong>.
+  </p>
+  <p>
+    The z-order among targets does get shuffled by remove/add, but since slots do not overlap vertically it is not
+    visible. The guarantee that the player is always on top is not broken either — the player is attached to the
+    <em>canvas</em> after the target layer, and what culling touches is <em>inside</em> the layer (the ADR-0006
+    rule "do not detach and reattach paints for the sake of draw order" pays off here).
+  </p>
+
+  <h2>Alternatives — considered but rejected</h2>
+  <ul>
+    <li>
+      <strong>Grow the canvas to the world height and scroll the page</strong> — canvas pixels explode in
+      proportion to the session count (30 sessions = 7200px tall), it hits the browser's maximum canvas size, and
+      rasterization cost is incurred in full even for invisible regions.
+    </li>
+    <li>
+      <strong>Shrink the slot spacing when there are many sessions to cram them all in</strong> — characters
+      overlap, and as the slot pitch diverges from the sprite size the hitbox rules (ticket 012) would have to be
+      reworked.
+    </li>
+    <li>
+      <strong>Have the simulation own the camera</strong> — detection would come to depend on the viewport (see above).
+    </li>
+    <li>
+      <strong>Center-pinned follow (no deadzone)</strong> — the user explicitly chose the deadzone.
+    </li>
+    <li>
+      <strong>alpha 0 without culling</strong> — the traversal cost remains.
+    </li>
+  </ul>
+
+  <h2>Consequences — the results of this decision</h2>
+  <ul>
+    <li>However many sessions there are, they all exist and can all be hit. The screen shows only the range the camera picked.</li>
+    <li>Frame cost is proportional to <strong>the number of sessions visible on screen</strong>, not the number of sessions.</li>
+    <li>
+      Because a culled node's clock stops, when it becomes visible again the idle loop phase continues (which can look like a reset).
+      It is a trade-off accepted in ticket 013.
+    </li>
+    <li>
+      ⚠️ <strong>Exit interacts with culling.</strong> A culled node has its <code>tick</code> stopped, so
+      <code>expired</code> never arrives, which means if a session ends while culled the node remains forever.
+      This was prevented by putting it back into the scene in <code>#beginExit</code> so it takes the normal fade
+      path (a bug we actually hit).
+    </li>
+    <li>
+      Since the floor line is gone, the spawn position became "the vertical center of the viewport" — being right
+      in the middle of the deadzone, the camera never moves right after boot.
+    </li>
+    <li>
+      Revisit condition: if the world also grows horizontally (targets appearing on both sides, etc.), the camera
+      must be extended to two dimensions. Right now <code>camera.ts</code> deliberately has only a single vertical
+      offset.
+    </li>
+  </ul>
+</body>
+</html>

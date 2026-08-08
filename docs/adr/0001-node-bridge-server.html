@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ADR-0001: Two-Tier Architecture — Node Bridge Server + Browser Client</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <p class="backlink"><a href="index.html">← ADR list</a></p>
+  <h1>ADR-0001: Two-Tier Architecture — Node Bridge Server + Browser Client</h1>
+  <p class="meta"><span class="status">Accepted</span> · 2026-08-02 · Author: wayfinder charting session</p>
+
+  <h2>Context — Why this decision is needed</h2>
+  <p>
+    REQUIREMENT calls for an app that "runs in the browser" to check the number of currently active
+    sessions using <code>@anthropic-ai/claude-agent-sdk</code>. However, research
+    (<code>.wayfinder/tickets/001</code>) showed the SDK <strong>cannot run in a browser</strong>:
+    it is a Node.js-only library that spawns the <code>claude</code> CLI as a subprocess and communicates over stdio.
+    Furthermore, session detection itself requires access to the local filesystem (<code>~/.claude/projects/</code>)
+    and to the process list, which is fundamentally impossible inside the browser sandbox.
+  </p>
+
+  <h2>Decision — What we decided</h2>
+  <p>Split the app into two tiers:</p>
+  <table>
+    <tr><th>Tier</th><th>Package</th><th>Role</th></tr>
+    <tr>
+      <td>Bridge server (Node)</td>
+      <td><code>packages/server</code></td>
+      <td>Owns the Agent SDK. Detects active sessions (1-second polling) and pushes session snapshots/changes over WebSocket (<code>:8787</code>)</td>
+    </tr>
+    <tr>
+      <td>Client (browser)</td>
+      <td><code>packages/client</code></td>
+      <td>Vite app. Receives WebSocket → event bus → rendering/game logic. Never imports the SDK</td>
+    </tr>
+  </table>
+  <p>
+    The two share only the types in <code>packages/shared</code> (<code>SessionInfo</code>, the event contract).
+    The default communication direction is a one-way server→client push (hits are visual effects only, so no
+    client→server commands are needed, <code>.wayfinder/tickets/004</code>).
+  </p>
+
+  <h2>Rationale — Why we did it that way</h2>
+  <ul>
+    <li>The official SDK hosting documentation presents exactly this structure (SDK on the backend + streaming to the browser over WebSocket/SSE) as the standard
+      (<a href="https://code.claude.com/docs/en/agent-sdk/hosting.md">hosting docs</a>)</li>
+    <li>The <code>ps</code> scan and file mtime lookups needed for session detection are only possible in Node anyway (ADR-0004)</li>
+    <li>Choosing WebSocket: the reconnection-handling code is comparable to SSE, and it leaves room to expand if bidirectional communication becomes necessary later</li>
+  </ul>
+
+  <h2>Alternatives — Considered but rejected</h2>
+  <ul>
+    <li><strong>Browser only (using the SDK directly)</strong> — Technically impossible. The SDK depends on subprocesses/the filesystem</li>
+    <li><strong>Static file polling (a file server without an app server)</strong> — <code>~/.claude</code> is outside the web root and process detection is impossible, so "active" cannot be determined</li>
+  </ul>
+
+  <h2>Consequences — Results of this decision</h2>
+  <ul>
+    <li>Development/demo requires running 2 processes → the root <code>npm run dev</code> runs them simultaneously via concurrently</li>
+    <li>The client must keep working even if the server dies (reconnect backoff) — demo safety</li>
+    <li>The server is for this machine only (localhost bind) — security considerations can be kept minimal</li>
+  </ul>
+</body>
+</html>

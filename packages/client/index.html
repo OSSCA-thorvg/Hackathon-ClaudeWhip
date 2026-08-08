@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ClaudeWhip</title>
+  </head>
+  <body>
+    <!--
+      What remains in the DOM is **text only** — the background decoration is drawn inside the
+      canvas by render/backdrop.ts.
+
+        #stage-canvas  the thorvg canvas. thorvg initializes from a CSS selector only, so the id
+                       is mandatory
+        #overlay   DOM text on top of the canvas (the fixed HUD is marked up here; session labels
+                   are appended by target-node.ts)
+    -->
+    <canvas id="stage-canvas"></canvas>
+    <div id="overlay">
+      <!-- main.ts fills in the login line's timestamp at boot -->
+      <div class="hud">
+        <div class="hud__login">Last login: — on ttys001</div>
+        <div class="hud__keys">
+          <span class="hud__comment"># </span>
+          <span class="hud__key">↑</span><span class="hud__key">↓</span
+          ><span class="hud__key">←</span><span class="hud__key">→</span> move
+          <span class="hud__sep">·</span> <span class="hud__key">space</span> whip
+        </div>
+      </div>
+
+      <!--
+        The user initiates the bridge server connection (no auto-connect).
+        session/connect-ui.ts fills the default address from BRIDGE_PORT — do not hardcode the
+        port here.
+        #overlay is pointer-events: none, so this bar alone turns it back to auto (styles.css).
+        It is styled to look like a single shell command: `❯ claudewhip --connect <url> [connected]`
+      -->
+      <div class="connect-bar" data-state="disconnected">
+        <span class="connect-bar__prompt">❯</span>
+        <label class="connect-bar__cmd" for="server-url">claudewhip</label>
+        <span class="connect-bar__flag">--connect</span>
+        <input
+          id="server-url"
+          class="connect-bar__input"
+          type="text"
+          spellcheck="false"
+          autocomplete="off"
+          autocapitalize="off"
+        />
+        <button id="server-connect" class="connect-bar__button" type="button">[connect]</button>
+        <span class="connect-bar__text">[disconnected]</span>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

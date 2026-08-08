@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ADR-0006: Single canvas + Scene per entity + 'gl' renderer</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <p class="backlink"><a href="index.html">← ADR list</a></p>
+  <h1>ADR-0006: Single canvas + Scene per entity + 'gl' renderer</h1>
+  <p class="meta"><span class="status">Accepted</span> · 2026-08-02 · Author: ticket 008 HITL session · Supersedes <a href="0005-rendering-strategy.html">ADR-0005</a></p>
+
+  <h2>Context — why this decision is needed</h2>
+  <p>
+    While reviewing the prototype (one canvas per session, ADR-0005), the user's original intent was confirmed:
+    REQUIREMENT's "draw using as many webcanvases as there are" meant <strong>drawing N characters inside
+    one large canvas</strong>, and the request for worker/OffscreenCanvas optimization also presupposed the
+    full re-render cost of a single canvas. Splitting the canvas was a misreading of the requirement.
+  </p>
+
+  <h2>Decision — what was decided</h2>
+  <ul>
+    <li><strong>One canvas covering the entire game area</strong>. Characters (N targets + the player) go into the scene graph as thorvg
+      <code>Scene</code> nodes, and their positions are controlled with paint <code>translate()</code></li>
+    <li><strong>Switch the renderer to <code>'gl'</code></strong> — with only one canvas, the reason ADR-0005 chose 'sw'
+      (a WebGL context consumed per canvas → the browser cap) disappears. In a structure that redraws the whole screen
+      every frame, GPU rasterization is effectively mandatory</li>
+    <li>The right-hand vertical single-file layout comes not from CSS but from <strong>layout computation in the render layer</strong> —
+      slot coordinates are passed to the worker via the existing protocol's geometry message (contract unchanged)</li>
+    <li>Session labels and the HUD stay as a <strong>DOM overlay</strong> on top of the canvas (text crispness, accessibility)</li>
+    <li>Retained: Lottie marker segment state transitions, <code>?url</code>+<code>locateFile</code> WASM loading,
+      the single rAF loop, and the ban on <code>Animation.play()</code> — the items validated in ADR-0005</li>
+  </ul>
+
+  <h2>Rationale — why it was done this way</h2>
+  <ul>
+    <li>User intent (the authoritative reading of the original requirement)</li>
+    <li>On a single canvas every character's idle animation runs continuously, so a full re-render each frame is
+      unavoidable — per-canvas dirty-flag localization becomes meaningless, and drawing everything on the GPU ('gl') is the right call</li>
+    <li>Session entry/exit is handled by Scene node add/remove + dispose (equivalent cost to DOM add/remove)</li>
+    <li>Separating game logic into a worker (ADR-0003) remains valid — the greater the render load, the more valuable it is
+      to have taken the simulation off the main thread</li>
+  </ul>
+
+  <h2>Alternatives — considered but rejected</h2>
+  <ul>
+    <li><strong>Keeping one canvas per session (ADR-0005)</strong> — a misreading of the requirement. It had technical merits
+      (CSS layout, localized rasterization), but it was not the picture the user wanted</li>
+    <li><strong>Single canvas + 'sw'</strong> — software-rasterizing a viewport-sized area (several MP) at 60fps is
+      a risk on a hackathon demo machine. Kept only as the fallback if 'gl' fails</li>
+    <li><strong>Moving rendering into a worker via OffscreenCanvas</strong> — unsupported by thorvg, ADR-0003 stands</li>
+  </ul>
+
+  <h2>Consequences — results of this decision</h2>
+  <ul>
+    <li>Reimplementation of the render layer (character-canvas/player-canvas/render-loop) — the bus contract, worker, and input are unchanged</li>
+    <li>The switch to 'gl' opens the possibility of new pitfalls (context lost, gl-specific bugs) — record them in CLAUDE.md's pitfalls when found</li>
+    <li>On resize, <code>canvas.resize()</code> + layout recomputation + geometry re-transmission are required</li>
+    <li>No matter how much the session count grows, it becomes irrelevant to the context cap (the scale ceiling is GPU rasterization performance)</li>
+  </ul>
+
+  <h2>Amendment — the background decoration goes into the canvas too (2026-08-03, ticket 015)</h2>
+  <p>
+    The original decision moved only the characters to the canvas and left <strong>the background decoration as a DOM layer beneath the canvas</strong>
+    (<code>#backdrop</code>: stage gradient + session column background/dividers). As the user pointed out,
+    this only half-honored this ADR's premise that "the entire game area is one canvas" — the same number, the column width (240px),
+    was split between <code>render/layout.ts</code> and a CSS variable, and on resize the canvas and the DOM
+    updated independently, leaving room for them to be off by one frame.
+  </p>
+  <ul>
+    <li><strong>The background moves to the bottommost layer of the scene graph</strong> — <code>render/backdrop.ts</code>
+      owns a <code>Scene</code> that draws the full viewport rectangle (linear gradient) + session column rectangles + 1px dividers,
+      and <code>Stage</code> adds it to the canvas <em>first</em>. The <code>#backdrop</code> markup and the
+      <code>--column-width</code> CSS variable are deleted</li>
+    <li><strong>Text stays in the DOM</strong> (session labels · HUD · connection bar). The hinting quality of 11px monospace,
+      cursor blinking (CSS animation), font loading, ellipsis based on measured character widths — DOM/CSS is overwhelmingly
+      better at all of these, and moving them to the canvas would only lose ground. In other words, this ADR's "one canvas" reads as
+      <strong>drawings on the canvas, letters in the DOM</strong></li>
+    <li>The price paid: thorvg cannot read CSS variables, so 5 background colors <strong>exist in duplicate</strong> in
+      <code>:root</code> of <code>styles.css</code> and in <code>render/backdrop.ts</code>.
+      Comments pointing at each other have been added on both sides. CSS's elliptical <code>radial-gradient</code>
+      could not be carried over as-is to thorvg's circular gradient, so it was approximated with a vertical linear one</li>
+  </ul>
+</body>
+</html>

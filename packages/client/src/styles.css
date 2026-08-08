@@ -1,0 +1,320 @@
+/*
+ * CSS has **exactly one job: the text on top of the canvas** — the session labels, HUD and
+ * connect bar inside #overlay. CSS knows nothing about character positions or sizes, nor about
+ * background decoration — the background (stage gradient / session columns) is drawn inside the
+ * canvas as its bottom-most layer (render/backdrop.ts).
+ *
+ * Theme = terminal emulator: deep achromatic background + monospace + shell prompt
+ * palette. Colors live in exactly one place, the :root below — every other rule only uses var().
+ *
+ * ⚠️ Background colors are the one exception and live in **two places**: thorvg cannot read CSS
+ * variables, so render/backdrop.ts carries its own copies of --bg / --bg-column / --line and of
+ * both ends of the stage gradient (#1f211f, #151615). If you change the theme, change that file
+ * too.
+ */
+
+:root {
+  /* Terminal background/structure — deep achromatic, not warm brown.
+     --bg-column is no longer used from CSS (the canvas draws the columns) but stays as the
+     palette's reference value — render/backdrop.ts holds a copy of it */
+  --bg: #1a1b1a;
+  --bg-column: #171817;
+  --bg-inset: #131413;
+  --line: #2c2e2c;
+  --text: #d6d8d3;
+  --muted: #6d716c;
+  /* Text dimmer than body copy, for comments and separators */
+  --term-comment: #4e524d;
+
+  /* Shell prompt palette */
+  --term-blue: #5c9fd6;
+  --term-green: #52c07a;
+  --term-yellow: #d5b565;
+  --term-red: #e06c60;
+  --term-cyan: #4fb3b8;
+  --accent: var(--term-red);
+
+  --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Pre-paint defaults — at boot main.ts overwrites the runtime values with the constants from
+     render/layout.ts. Label metrics are geometry, not decoration: labelY (layout.ts) and the
+     character budget (target-node.ts) are computed from the same values, so do not edit them
+     here on their own */
+  --label-font-size: 11px;
+  --label-line-height: 16px;
+  --label-gap: 6px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+}
+
+/* ── Game canvas (the one and only, covering the whole viewport) ──
+   The background decoration is inside this canvas too (render/backdrop.ts) — there is no DOM
+   layer beneath it. body's --bg is only the backing for the instant before the canvas paints
+   its first frame. */
+#stage-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  /* The actual pixel size is set by the thorvg Canvas, DPR included (canvas.resize) */
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Text overlay (on top of the canvas) ─────────────────────── */
+#overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+/* ── HUD: terminal login banner ──────────────────────────────── */
+.hud {
+  position: absolute;
+  /* Top chrome (HUD/connect bar) sits above session labels that scroll up into it — overlapping
+     would make both unreadable */
+  z-index: 1;
+  top: 14px;
+  left: 18px;
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.hud__login {
+  color: var(--text);
+  opacity: 0.72;
+}
+
+.hud__keys {
+  color: var(--muted);
+}
+
+.hud__comment,
+.hud__sep {
+  color: var(--term-comment);
+}
+
+.hud__key {
+  display: inline-block;
+  min-width: 15px;
+  padding: 0 3px;
+  color: var(--term-cyan);
+  text-align: center;
+}
+
+/* ── Bridge server connect bar ────────────────────────────────
+ * Styled to read as a single shell command: `❯ claudewhip --connect <url> [connect] [status]`
+ * #overlay is pointer-events: none, so this is the only place that turns it back to auto. */
+.connect-bar {
+  position: absolute;
+  z-index: 1;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  /* Same color as the inset but very slightly translucent — the color itself lives only in :root */
+  background: color-mix(in srgb, var(--bg-inset) 96%, transparent);
+  font-size: 12px;
+  color: var(--muted);
+  pointer-events: auto;
+}
+
+.connect-bar__prompt {
+  color: var(--term-green);
+  font-weight: 700;
+}
+
+.connect-bar__cmd {
+  color: var(--text);
+}
+
+.connect-bar__flag {
+  color: var(--muted);
+}
+
+.connect-bar__input {
+  width: 190px;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: var(--bg-inset);
+  color: var(--term-yellow);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.connect-bar__input:focus {
+  outline: none;
+  border-color: var(--term-cyan);
+}
+
+.connect-bar__input:disabled {
+  opacity: 0.6;
+}
+
+/* The button is text too — like a clickable token inside shell output */
+.connect-bar__button {
+  padding: 2px 4px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--term-cyan);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.connect-bar__button:hover {
+  background: var(--term-cyan);
+  color: var(--bg-inset);
+}
+
+/* Status text — the values (`[connected]` etc.) come from connect-ui.ts, the colors from here */
+.connect-bar__text {
+  min-width: 104px;
+  color: var(--muted);
+}
+
+.connect-bar[data-state='connecting'] .connect-bar__text {
+  color: var(--term-yellow);
+}
+
+.connect-bar[data-state='connected'] .connect-bar__text {
+  color: var(--term-green);
+}
+
+.connect-bar[data-state='error'] .connect-bar__text {
+  color: var(--term-red);
+}
+
+/* ── Session label = a two-line shell prompt block ──────────────
+ *     ~/…/sample-workspace feat/refactor
+ *                          ❯ claude █
+ * The label layer is the container that takes the camera offset as a whole (render/stage.ts) —
+ * each individual label's coordinates stay in world space. */
+.session-labels {
+  position: absolute;
+  inset: 0;
+  /* Below the top chrome — as the camera pans down, labels travel through the connect bar's spot */
+  z-index: 0;
+  will-change: transform;
+}
+
+/* The label's geometry (position, width) comes from target-node.ts — this is typography only.
+   Note that font size, line height and gap are values render/layout.ts pushes down as CSS
+   variables (the geometry computation and the character budget must see the same numbers) —
+   never write those numbers directly here */
+.session-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* Stack the two lines vertically and **align them right** — each line is only as wide as its
+     content. The width (= column width - 2×inset) is set inline by target-node.ts.
+     overflow: hidden is the last line of defense: even if the character budget is off, the label
+     can never escape this box */
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-size: var(--label-font-size);
+  line-height: var(--label-line-height);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  transition: color 0.12s ease-out;
+}
+
+.session-label__line {
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: var(--label-gap);
+  max-width: 100%;
+}
+
+.session-label__path {
+  color: var(--term-blue);
+}
+
+/* The last directory = that session's identity */
+.session-label__dir {
+  font-weight: 700;
+}
+
+.session-label__branch {
+  color: var(--term-green);
+}
+
+.session-label__prompt {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.session-label__cmd {
+  color: var(--term-green);
+}
+
+/* Block cursor — only visible (and blinking) while working. When idle it takes no space at all */
+.session-label__cursor {
+  margin-left: -3px;
+  color: var(--text);
+  animation: term-cursor 1.06s step-end infinite;
+}
+
+.session-label:not([data-status='working']) .session-label__cursor {
+  display: none;
+}
+
+@keyframes term-cursor {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* A culled target (outside the viewport) is detached from the scene and its label goes with it
+   (render/stage.ts) */
+.session-label.is-culled {
+  display: none;
+}
+
+/* The sprite shake is handled by the scene transform (target-node.ts) — here we only highlight
+   the label. The terminal-native highlight is a momentary inverse video. The background is
+   applied **per line** — putting it on the root would turn the empty right-aligned margin into a
+   red slab too, making the whole column flash */
+.session-label.is-hit .session-label__line {
+  background: var(--term-red);
+}
+
+/* Each fragment carries its own color (path = blue, branch = green, …), so changing the root
+   color alone does not override them — in the inverse state everything must become
+   background-colored text, so the root and the fragments are bound into one rule */
+.session-label.is-hit,
+.session-label.is-hit
+  :is(
+    .session-label__path,
+    .session-label__branch,
+    .session-label__prompt,
+    .session-label__cmd,
+    .session-label__cursor
+  ) {
+  color: var(--bg);
+}

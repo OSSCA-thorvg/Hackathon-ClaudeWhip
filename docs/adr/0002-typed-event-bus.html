@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ADR-0002: Typed Event Bus with a Shared Contract</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <p class="backlink"><a href="index.html">← ADR list</a></p>
+  <h1>ADR-0002: Typed Event Bus with a Shared Contract</h1>
+  <p class="meta"><span class="status">Accepted</span> · 2026-08-02 · Author: wayfinder charting session</p>
+
+  <h2>Context — Why this decision is needed</h2>
+  <p>
+    REQUIREMENT calls for separating concerns via event-driven development (EDA).
+    The components are (a) the session monitor adapter, (b) the canvas renderer, and (c) the game logic (worker) — they may live on different threads,
+    so a communication protocol that crosses the postMessage boundary is needed.
+  </p>
+
+  <h2>Decision — What we decided</h2>
+  <p>Adopt a typed event bus built from the following patterns:</p>
+  <table>
+    <tr><th>Pattern</th><th>Implementation</th></tr>
+    <tr><td>Typed event registry (name → payload)</td><td><code>EventMap</code> in <code>shared/src/events.ts</code> (compile-time verified)</td></tr>
+    <tr><td>Components share only the event contract module (importing each other is forbidden)</td><td>Only <code>@claudewhip/shared</code> is shared — the renderer, worker, and adapter do not know each other</td></tr>
+    <tr><td>Transport abstraction</td><td><code>LocalTransport</code> (same thread) / <code>PortTransport</code> (worker MessagePort) — hidden behind the bus</td></tr>
+    <tr><td>Handler exception isolation ("do not kill the loop")</td><td>All handlers wrapped in try/catch</td></tr>
+    <tr><td>Coalescing options (max wait / max batch)</td><td>Subscriber-side coalescing — collapses <code>game_state_updated</code> to once per frame</td></tr>
+    <tr><td>Cached broadcast + late-joiner catch-up</td><td><code>cacheId</code> publication + <code>fetchCached()</code> — a character canvas created midway immediately obtains the state</td></tr>
+    <tr><td>anycast (consumer groups) + coordinator</td><td><strong>Deferred</strong> — not introduced as long as broadcast alone suffices</td></tr>
+  </table>
+  <p>Payloads must be structured-clone-able — the postMessage boundary enforces this at the transport layer.</p>
+
+  <h2>Rationale — Why we did it that way</h2>
+  <ul>
+    <li>Subscriber-side coalescing is the pattern with the greatest value for canvas rendering — it merges the 60Hz simulation ticks into a single draw, satisfying the optimization requirement</li>
+    <li>REQUIREMENT itself judges that "a manage component may not even be necessary" — broadcast semantics do not need consumer groups, so a coordinator would be speculative complexity</li>
+  </ul>
+
+  <h2>Alternatives — Considered but rejected</h2>
+  <ul>
+    <li><strong>DOM CustomEvent / EventTarget</strong> — Cannot cross the worker boundary and has no type safety</li>
+    <li><strong>External libraries such as RxJS</strong> — Overkill for the hackathon scope; keep deps minimal</li>
+    <li><strong>BroadcastChannel alone</strong> — Broadcast to all components works, but ack/targeted addressing is impossible; running MessagePort alongside is more flexible</li>
+  </ul>
+
+  <h2>Consequences — Results of this decision</h2>
+  <ul>
+    <li>Adding a new event = one line in <code>EventMap</code> — publish/subscribe code is type-checked automatically</li>
+    <li>Events are lossy broadcast by default — state recovery is solved with <code>fetchCached</code> rather than delivery guarantees ("delivery is not guaranteed" is an honest contract, not a defect)</li>
+    <li>If work distribution (anycast) becomes necessary, add a coordinator then — this ADR will need to be revised</li>
+  </ul>
+</body>
+</html>

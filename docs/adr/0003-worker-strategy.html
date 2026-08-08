@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ADR-0003: Worker Strategy — Rendering on the Main Thread, Game Logic in a Worker</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <p class="backlink"><a href="index.html">← ADR list</a></p>
+  <h1>ADR-0003: Worker Strategy — Rendering on the Main Thread, Game Logic in a Worker</h1>
+  <p class="meta"><span class="status">Accepted</span> · 2026-08-02 · Author: wayfinder charting session</p>
+
+  <h2>Context — Why this decision is needed</h2>
+  <p>
+    REQUIREMENT calls for making maximum use of workers for optimization, and for analyzing the feasibility of using
+    OffscreenCanvas and implementing accordingly. Research (<code>.wayfinder/tickets/002</code>) showed that
+    <code>@thorvg/webcanvas@1.1.0</code> <strong>does not support OffscreenCanvas/worker rendering</strong>:
+  </p>
+  <ul>
+    <li>The <code>Canvas</code> constructor accepts only a CSS selector and calls <code>document.querySelector</code> internally — DOM required</li>
+    <li><code>OffscreenCanvas</code> appears 0 times in the bundle source, and <code>window.devicePixelRatio</code> is accessed directly</li>
+    <li>Official issues <a href="https://github.com/thorvg/thorvg.web/issues/225">#225</a> (request for OffscreenCanvas initialization, open),
+      <a href="https://github.com/thorvg/thorvg.web/issues/227">#227</a> (maintainer: "web worker based rendering is not supported"),
+      <a href="https://github.com/thorvg/thorvg.web/issues/287">#287</a> (DOM-less interface roadmap, open)</li>
+  </ul>
+
+  <h2>Decision — What we decided</h2>
+  <table>
+    <tr><th>Thread</th><th>Responsibility</th><th>Code location</th></tr>
+    <tr><td>Main thread</td><td>All thorvg rendering (canvas, Lottie frame seeking, rAF loop) + key input + WebSocket</td><td><code>client/src/render</code>, <code>input</code>, <code>session</code></td></tr>
+    <tr><td>Logic worker (1)</td><td>Game simulation at a fixed 60Hz tick: player movement, whip state machine, hit detection</td><td><code>client/src/game</code></td></tr>
+  </table>
+  <p>
+    Worker→main communicates only via the <code>game_state_updated</code> event (with coalescing applied).
+    The thorvg <code>/thread</code> build (pthread parallelization inside the engine) is not adopted.
+  </p>
+
+  <h2>Rationale — Why we did it that way</h2>
+  <ul>
+    <li>Since OffscreenCanvas is impossible at the library level, the feasible form of "maximum worker utilization" is separating the simulation —
+      the main thread becomes drawing-only, so input latency becomes independent of logic cost</li>
+    <li>Reasons for excluding the <code>/thread</code> build: new in 1.1.0 and unstable (<a href="https://github.com/thorvg/thorvg.web/issues/329">#329</a>),
+      requires COOP/COEP headers (breaks embedding of external resources), packaging defect (the pthread worker references files that are not shipped) — no benefit relative to the hackathon risk</li>
+    <li>The render load itself is small: as many small canvases as there are sessions (a few to a dozen-odd) + the 'sw' renderer (ADR-0005)</li>
+  </ul>
+
+  <h2>Alternatives — Considered but rejected</h2>
+  <ul>
+    <li><strong>OffscreenCanvas + worker rendering</strong> — Impossible because thorvg does not support it. Revisit when #287 is resolved</li>
+    <li><strong>thorvg /thread build</strong> — The risks above. Revisit if a performance bottleneck is measured</li>
+    <li><strong>Everything on the main thread</strong> — It would work, but it would abandon REQUIREMENT's intent to make use of workers. Separating the logic worker is low-cost and has structural benefits (pure-function simulation, easy testing)</li>
+  </ul>
+
+  <h2>Consequences — Results of this decision</h2>
+  <ul>
+    <li>Never move the render code into a worker — the DOM dependency in <code>render/</code> is intentional</li>
+    <li>Keep the simulation as pure functions (<code>simulation.ts</code>) — unit-testable without a worker</li>
+    <li>When thorvg.web #225/#287 are resolved, revisit this ADR and discuss migrating to OffscreenCanvas</li>
+  </ul>
+</body>
+</html>

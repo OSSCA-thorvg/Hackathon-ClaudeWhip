@@ -1,0 +1,5 @@
+packages:
+  - packages/*
+allowBuilds:
+  # vite's native binary install script — without it dev/build won't come up
+  esbuild: true
