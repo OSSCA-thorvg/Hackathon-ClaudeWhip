@@ -6,16 +6,27 @@ Each target wears its session's shell prompt as a label (`~/…/my-project main 
 
 ## How it works
 
-```
-┌─ packages/server (Node) ─────────────┐      ┌─ packages/client (browser, Vite) ───────────────┐
-│ session-monitor: 1s polling          │  WS  │ session/ws-adapter ─┐                           │
-│  ps scan (claude --session-id)       │─────▶│                     ▼                           │
-│  + ~/.claude/projects/*.jsonl mtime  │ :8787│            [EventBus (shared contract)]         │
-│  + Agent SDK metadata enrichment     │      │              ▲              ▲          ▲        │
-└──────────────────────────────────────┘      │   input/keyboard   game/logic.worker  render/*  │
-                                              │   (main thread)    (Web Worker,       (main,    │
-                                              │                     60Hz simulation)  thorvg)   │
-                                              └─────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+  subgraph server["packages/server (Node)"]
+    SM["session-monitor<br/>1s polling: ps scan + jsonl mtime<br/>+ Agent SDK metadata"]
+  end
+
+  subgraph client["packages/client (browser, Vite)"]
+    ADAPTER["session/ws-adapter"]
+    BUS(["EventBus<br/>(typed contract from @claudewhip/shared)"])
+    INPUT["input/keyboard<br/>(main thread)"]
+    WORKER["game/logic.worker<br/>(Web Worker, 60Hz simulation)"]
+    RENDER["render/*<br/>(main thread, thorvg canvas)"]
+
+    ADAPTER -- "session_snapshot" --> BUS
+    INPUT -- "player_move / whip_swing" --> BUS
+    BUS -- "input events" --> WORKER
+    WORKER -- "game_state_updated / target_hit" --> BUS
+    BUS -- "coalesced state" --> RENDER
+  end
+
+  SM -- "WebSocket :8787" --> ADAPTER
 ```
 
 - A local **bridge server** detects the machine's live Claude Code sessions (process scan + transcript mtime + Agent SDK metadata) and pushes them over WebSocket.
