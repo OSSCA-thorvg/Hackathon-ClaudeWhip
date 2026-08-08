@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.tsbuildinfo
+*.local
+.DS_Store
+
+# Playwright (E2E artifacts — only traces of failures remain)
+test-results/
+playwright-report/
+
+# Local planning history (wayfinder tickets/map) — not part of the shipped repo
+.wayfinder/
