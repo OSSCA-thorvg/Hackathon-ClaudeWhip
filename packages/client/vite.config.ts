@@ -12,7 +12,9 @@ const require = createRequire(import.meta.url);
  */
 const thorvgWasmPath = join(dirname(require.resolve('@thorvg/webcanvas')), 'thorvg.wasm');
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  // GitHub Pages serves the site under /<repo>/ — build-only so the dev server keeps plain /
+  base: command === 'build' ? '/Hackathon-ClaudeWhip/' : '/',
   // The Emscripten glue depends on import.meta.url — esbuild pre-bundling can break it
   optimizeDeps: {
     exclude: ['@thorvg/webcanvas'],
@@ -23,4 +25,4 @@ export default defineConfig({
       { find: /^@thorvg\/webcanvas\/dist\/thorvg\.wasm/, replacement: thorvgWasmPath },
     ],
   },
-});
+}));

@@ -30,9 +30,17 @@
 // dependency (only the coordinate space differs: these are sprite-local).
 import type { BodyHalfExtent, Box } from '../game/hitbox.js';
 
+/**
+ * Vite's base path ('/Hackathon-ClaudeWhip/' on the GitHub Pages build, '/' in dev). Guarded with
+ * `?.` because this file is also imported outside vite — scripts/check-geometry.mjs and the unit
+ * tests run it in plain Node, where `import.meta.env` does not exist.
+ */
+const ASSET_BASE: string =
+  (import.meta as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? '/';
+
 export const CHARACTER_ASSETS = {
   target: {
-    lottie: '/assets/characters/claude-target-v2.json',
+    lottie: `${ASSET_BASE}assets/characters/claude-target-v2.json`,
     /**
      * idle/working are state loops (session status); hit (30f) / flinch (60f) are one-shot
      * reactions. hit = the moment of being struck, flinch = **the groggy state entered after 3
@@ -66,7 +74,7 @@ export const CHARACTER_ASSETS = {
     bodyBox: { halfW: 63, halfH: 31.5 } satisfies BodyHalfExtent,
   },
   player: {
-    lottie: '/assets/characters/claude-player-v2.json',
+    lottie: `${ASSET_BASE}assets/characters/claude-player-v2.json`,
     /**
      * idle/walk are state loops (whether the player is moving); swing is one-shot.
      * windup is still unwired (it lands if a charge mechanic appears); crack is not for playback
