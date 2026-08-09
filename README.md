@@ -4,6 +4,8 @@ A browser game for people with too many Claude Code sessions: **every active Cla
 
 Each target wears its session's shell prompt as a label (`~/…/my-project main ❯ claude █`, with a block cursor while the session is working). Land 3 hits within 1.5 seconds and the target goes groggy.
 
+**▶ Play it now: <https://ossca-thorvg.github.io/Hackathon-ClaudeWhip/>** — works standalone (move & swing with zero targets). To see your own sessions as characters, run the bridge server locally (see below) and press **connect** in the top bar.
+
 ## How it works
 
 ```mermaid
@@ -45,6 +47,8 @@ pnpm dev          # bridge server (:8787) + client (:5173)
 ```
 
 Open <http://localhost:5173>, then press **connect** in the top bar (default address `ws://localhost:8787`). Your running Claude Code sessions appear as characters.
+
+The same works on the [hosted page](https://ossca-thorvg.github.io/Hackathon-ClaudeWhip/) — it is a static build of the client, so start the bridge on your machine (`pnpm dev:server`) and connect to `ws://localhost:8787` from there.
 
 | Key | Action |
 |---|---|
